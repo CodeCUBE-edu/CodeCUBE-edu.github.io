@@ -1,62 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
+<head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lifetime Duck Project</title>
     <link rel="shortcut icon" type="image/ico" href="favicon.ico">
     <style>
-      body, html {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        background-color: black;
-        overflow: hidden;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      }
-      #container {
-        width: 100%;
-        height: 100%;
-      }
-      #title {
-        display: none;
-      }
+        /* Fullscreen styles */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: black;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
     </style>
     <script>
-      window.RufflePlayer = window.RufflePlayer || {};
-      window.RufflePlayer.config = {
-        "polyfills": true,
-        "autoplay": "auto",
-        "unmuteOverlay": "visible",
-        "backgroundColor": "black",
-        "letterbox": "fullscreen",
-        "warnOnUnsupportedContent": true,
-        "contextMenu": true,
-        "upgradeToHttps": window.location.protocol === "https:",
-        "maxExecutionDuration": {"secs": 15, "nanos": 0},
-        "logLevel": "error",
-        "menu": true,
-        "salign": "",
-        "scale": "exactFit",
-        "quality": "high",
-      };
+        window.RufflePlayer = window.RufflePlayer || {};
+        window.RufflePlayer.config = {
+            "polyfills": true,
+            "autoplay": "auto",
+            "unmuteOverlay": "visible",
+            "backgroundColor": "black",
+            "letterbox": "fullscreen",
+            "warnOnUnsupportedContent": true,
+            "contextMenu": true,
+            "upgradeToHttps": window.location.protocol === "https:",
+            "maxExecutionDuration": {"secs": 15, "nanos": 0},
+            "logLevel": "error",
+            "menu": true,
+            "salign": "",
+            "scale": "exactFit",
+            "quality": "high",
+        };
     </script>
-  </head>
-  <body>
+</head>
+<body>
     <div id="container"></div>
     <script src="ruffle/ruffle.js"></script>
     <script>
-      window.RufflePlayer = window.RufflePlayer || {};
-      window.addEventListener("load", () => {
-          const ruffle = window.RufflePlayer.newest();
-          const player = ruffle.createPlayer();
-          const container = document.getElementById("container");
-          container.appendChild(player);
-          player.load("ducklife3evolution.swf");
-      });
+        window.RufflePlayer = window.RufflePlayer || {};
+        window.addEventListener("load", () => {
+            const ruffle = window.RufflePlayer.newest();
+            const player = ruffle.createPlayer();
+            const container = document.getElementById("container");
+            container.appendChild(player);
+            
+            // Adjust dimensions to fill screen
+            player.style.width = "100%";
+            player.style.height = "100%";
+            player.load("ducklife3evolution.swf").then(() => {
+                player.play();
+            });
+        });
     </script>
-  </body>
+</body>
 </html>
