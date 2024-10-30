@@ -2871,13 +2871,10 @@ textarea.w-input, textarea.w-select {
 }
 
 .add-a-game-container {
-  color: #fff;
   border: 10px solid #1c5dff;
-  width: 650px;
-  max-width: none;
-  height: 815px;
+  max-width: 650px;
+  height: 810px;
   margin-top: 50px;
-  padding-right: 0;
 }
 
 .add-a-game-section {
@@ -2892,6 +2889,7 @@ textarea.w-input, textarea.w-select {
 .add-a-game-container-head {
   border: 10px solid #1c5dff;
   max-width: 650px;
+  max-height: 1200px;
   margin-top: 50px;
   padding-right: 0;
 }
@@ -2914,43 +2912,6 @@ textarea.w-input, textarea.w-select {
   padding-top: 20px;
   padding-left: 10px;
   font-size: 20px;
-}
-
-.add-game-link {
-  background-color: #2979ff;
-  border-radius: 10px;
-  margin-top: 12px;
-  padding-left: 150px;
-  padding-right: 150px;
-  font-family: Oswald, sans-serif;
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 40px;
-  position: relative;
-  top: 6px;
-  left: 18px;
-  right: 0;
-}
-
-.category-button-sports {
-  background-color: #b311c5;
-  border-radius: 10px;
-  margin-right: 25px;
-  padding-left: 75px;
-  padding-right: 75px;
-  font-family: Oswald, sans-serif;
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 40px;
-  position: static;
-  top: 6px;
-  left: 18px;
-  right: 0;
-}
-
-.sports-section {
-  background-color: #1d1d1d;
-  height: 800px;
 }
 
 @media screen and (max-width: 991px) {
