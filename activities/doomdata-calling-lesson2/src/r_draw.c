@@ -1,48 +1,48 @@
-//
-// Copyright(C) 1993-1996 Id Software, Inc.
-// Copyright(C) 2005-2014 Simon Howard
-//
-// This program is free software; you can redistribute it and/or
-// modify it under the terms of the GNU General Public License
-// as published by the Free Software Foundation; either version 2
-// of the License, or (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// DESCRIPTION:
-//	The actual span/column drawing functions.
-//	Here find the main potential for optimization,
-//	 e.g. inline assembly, different algorithms.
-//
+/* Emacs style mode select   -*- C++ -*-
+ *-----------------------------------------------------------------------------
+ *
+ *
+ *  PrBoom: a Doom port merged with LxDoom and LSDLDoom
+ *  based on BOOM, a modified and improved DOOM engine
+ *  Copyright (C) 1999 by
+ *  id Software, Chi Hoang, Lee Killough, Jim Flynn, Rand Phares, Ty Halderman
+ *  Copyright (C) 1999-2000 by
+ *  Jess Haas, Nicolas Kalkhof, Colin Phipps, Florian Schulze
+ *  Copyright 2005, 2006 by
+ *  Florian Schulze, Colin Phipps, Neil Stevens, Andrey Budko
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version 2
+ *  of the License, or (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
+ *  02111-1307, USA.
+ *
+ * DESCRIPTION:
+ *      The actual span/column drawing functions.
+ *      Here find the main potential for optimization,
+ *       e.g. inline assembly, different algorithms.
+ *
+ *-----------------------------------------------------------------------------*/
 
-
-
-
-#include "doomdef.h"
-#include "deh_main.h"
-
-#include "i_system.h"
-#include "z_zone.h"
-#include "w_wad.h"
-
-#include "r_local.h"
-
-// Needs access to LFB (guess what).
-#include "v_video.h"
-
-// State.
 #include "doomstat.h"
-
-
-// ?
-#define MAXWIDTH			1120
-#define MAXHEIGHT			832
-
-// status bar height at bottom of screen
-#define SBARHEIGHT		32
+#include "w_wad.h"
+#include "r_main.h"
+#include "r_draw.h"
+#include "r_filter.h"
+#include "v_video.h"
+#include "st_stuff.h"
+#include "g_game.h"
+#include "am_map.h"
+#include "lprintf.h"
 
 //
 // All drawing to the view buffer is accomplished in this file.
@@ -53,44 +53,247 @@
 //  and the total size == width*height*depth/8.,
 //
 
-
-byte*		viewimage; 
-int		viewwidth;
-int		scaledviewwidth;
-int		viewheight;
-int		viewwindowx;
-int		viewwindowy; 
-byte*		ylookup[MAXHEIGHT]; 
-int		columnofs[MAXWIDTH]; 
+byte *viewimage;
+int  viewwidth;
+int  scaledviewwidth;
+int  viewheight;
+int  viewwindowx;
+int  viewwindowy;
 
 // Color tables for different players,
 //  translate a limited part to another
 //  (color ramps used for  suit colors).
 //
-byte		translations[3][256];	
- 
-// Backing buffer containing the bezel drawn around the screen and 
-// surrounding background.
 
-static byte *background_buffer = NULL;
-
+// CPhipps - made const*'s
+const byte *tranmap;          // translucency filter maps 256x256   // phares
+const byte *main_tranmap;     // killough 4/11/98
 
 //
 // R_DrawColumn
 // Source is the top of the column to scale.
 //
-lighttable_t*		dc_colormap; 
-int			dc_x; 
-int			dc_yl; 
-int			dc_yh; 
-fixed_t			dc_iscale; 
-fixed_t			dc_texturemid;
 
-// first pixel in a column (possibly virtual) 
-byte*			dc_source;		
+// SoM: OPTIMIZE for ANYRES
+typedef enum
+{
+   COL_NONE,
+   COL_OPAQUE,
+   COL_TRANS,
+   COL_FLEXTRANS,
+   COL_FUZZ,
+   COL_FLEXADD
+} columntype_e;
 
-// just for profiling 
-int			dccount;
+static int    temp_x = 0;
+static int    tempyl[4], tempyh[4];
+static byte           byte_tempbuf[MAX_SCREENHEIGHT * 4];
+static unsigned short short_tempbuf[MAX_SCREENHEIGHT * 4];
+static unsigned int   int_tempbuf[MAX_SCREENHEIGHT * 4];
+static int    startx = 0;
+static int    temptype = COL_NONE;
+static int    commontop, commonbot;
+static const byte *temptranmap = NULL;
+// SoM 7-28-04: Fix the fuzz problem.
+static const byte   *tempfuzzmap;
+
+//
+// Spectre/Invisibility.
+//
+
+#define FUZZTABLE 50
+// proff 08/17/98: Changed for high-res
+//#define FUZZOFF (SCREENWIDTH)
+#define FUZZOFF 1
+
+static const int fuzzoffset_org[FUZZTABLE] = {
+  FUZZOFF,-FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
+  FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
+  FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,
+  FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
+  FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,
+  FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,
+  FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF
+};
+
+static int fuzzoffset[FUZZTABLE];
+
+static int fuzzpos = 0;
+
+// render pipelines
+#define RDC_STANDARD      1
+#define RDC_TRANSLUCENT   2
+#define RDC_TRANSLATED    4
+#define RDC_FUZZ          8
+// no color mapping
+#define RDC_NOCOLMAP     16
+// filter modes
+#define RDC_DITHERZ      32
+#define RDC_BILINEAR     64
+#define RDC_ROUNDED     128
+
+draw_vars_t drawvars = { 
+  NULL, // byte_topleft
+  NULL, // short_topleft
+  NULL, // int_topleft
+  0, // byte_pitch
+  0, // short_pitch
+  0, // int_pitch
+  RDRAW_FILTER_POINT, // filterwall
+  RDRAW_FILTER_POINT, // filterfloor
+  RDRAW_FILTER_POINT, // filtersprite
+  RDRAW_FILTER_POINT, // filterz
+  RDRAW_FILTER_POINT, // filterpatch
+
+  RDRAW_MASKEDCOLUMNEDGE_SQUARE, // sprite_edges
+  RDRAW_MASKEDCOLUMNEDGE_SQUARE, // patch_edges
+
+  // 49152 = FRACUNIT * 0.75
+  // 81920 = FRACUNIT * 1.25
+  49152 // mag_threshold
+};
+
+//
+// Error functions that will abort if R_FlushColumns tries to flush 
+// columns without a column type.
+//
+
+static void R_FlushWholeError(void)
+{
+   I_Error("R_FlushWholeColumns called without being initialized.\n");
+}
+
+static void R_FlushHTError(void)
+{
+   I_Error("R_FlushHTColumns called without being initialized.\n");
+}
+
+static void R_QuadFlushError(void)
+{
+   I_Error("R_FlushQuadColumn called without being initialized.\n");
+}
+
+static void (*R_FlushWholeColumns)(void) = R_FlushWholeError;
+static void (*R_FlushHTColumns)(void)    = R_FlushHTError;
+static void (*R_FlushQuadColumn)(void) = R_QuadFlushError;
+
+static void R_FlushColumns(void)
+{
+   if(temp_x != 4 || commontop >= commonbot)
+      R_FlushWholeColumns();
+   else
+   {
+      R_FlushHTColumns();
+      R_FlushQuadColumn();
+   }
+   temp_x = 0;
+}
+
+//
+// R_ResetColumnBuffer
+//
+// haleyjd 09/13/04: new function to call from main rendering loop
+// which gets rid of the unnecessary reset of various variables during
+// column drawing.
+//
+void R_ResetColumnBuffer(void)
+{
+   // haleyjd 10/06/05: this must not be done if temp_x == 0!
+   if(temp_x)
+      R_FlushColumns();
+   temptype = COL_NONE;
+   R_FlushWholeColumns = R_FlushWholeError;
+   R_FlushHTColumns    = R_FlushHTError;
+   R_FlushQuadColumn   = R_QuadFlushError;
+}
+
+#define R_DRAWCOLUMN_PIPELINE RDC_STANDARD
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad8
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_TRANSLUCENT
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL8
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_FUZZ
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz8
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_STANDARD
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad15
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_TRANSLUCENT
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL15
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_FUZZ
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz15
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_STANDARD
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad16
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_TRANSLUCENT
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL16
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_FUZZ
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz16
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_STANDARD
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad32
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_TRANSLUCENT
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL32
+#include "r_drawflush.inl"
+
+#define R_DRAWCOLUMN_PIPELINE RDC_FUZZ
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz32
+#include "r_drawflush.inl"
+
+//
+// R_DrawColumn
+//
 
 //
 // A column is a vertical slice/span from a wall texture that,
@@ -98,316 +301,89 @@ int			dccount;
 //  will always have constant z depth.
 // Thus a special case loop for very fast rendering can
 //  be used. It has also been used with Wolfenstein 3D.
-// 
-void R_DrawColumn (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    fixed_t		frac;
-    fixed_t		fracstep;	 
- 
-    count = dc_yh - dc_yl; 
-
-    // Zero length, column does not exceed a pixel.
-    if (count < 0) 
-	return; 
-				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT) 
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x); 
-#endif 
-
-    // Framebuffer destination address.
-    // Use ylookup LUT to avoid multiply with ScreenWidth.
-    // Use columnofs LUT for subwindows? 
-    dest = ylookup[dc_yl] + columnofs[dc_x];  
-
-    // Determine scaling,
-    //  which is the only mapping to be done.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
-
-    // Inner loop that does the actual texture mapping,
-    //  e.g. a DDA-lile scaling.
-    // This is as fast as it gets.
-    do 
-    {
-	// Re-map color indices from wall texture column
-	//  using a lighting/special effects LUT.
-	*dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
-	
-	dest += SCREENWIDTH; 
-	frac += fracstep;
-	
-    } while (count--); 
-} 
-
-
-
-// UNUSED.
-// Loop unrolled.
-#if 0
-void R_DrawColumn (void) 
-{ 
-    int			count; 
-    byte*		source;
-    byte*		dest;
-    byte*		colormap;
-    
-    unsigned		frac;
-    unsigned		fracstep;
-    unsigned		fracstep2;
-    unsigned		fracstep3;
-    unsigned		fracstep4;	 
- 
-    count = dc_yh - dc_yl + 1; 
-
-    source = dc_source;
-    colormap = dc_colormap;		 
-    dest = ylookup[dc_yl] + columnofs[dc_x];  
-	 
-    fracstep = dc_iscale<<9; 
-    frac = (dc_texturemid + (dc_yl-centery)*dc_iscale)<<9; 
- 
-    fracstep2 = fracstep+fracstep;
-    fracstep3 = fracstep2+fracstep;
-    fracstep4 = fracstep3+fracstep;
-	
-    while (count >= 8) 
-    { 
-	dest[0] = colormap[source[frac>>25]]; 
-	dest[SCREENWIDTH] = colormap[source[(frac+fracstep)>>25]]; 
-	dest[SCREENWIDTH*2] = colormap[source[(frac+fracstep2)>>25]]; 
-	dest[SCREENWIDTH*3] = colormap[source[(frac+fracstep3)>>25]];
-	
-	frac += fracstep4; 
-
-	dest[SCREENWIDTH*4] = colormap[source[frac>>25]]; 
-	dest[SCREENWIDTH*5] = colormap[source[(frac+fracstep)>>25]]; 
-	dest[SCREENWIDTH*6] = colormap[source[(frac+fracstep2)>>25]]; 
-	dest[SCREENWIDTH*7] = colormap[source[(frac+fracstep3)>>25]]; 
-
-	frac += fracstep4; 
-	dest += SCREENWIDTH*8; 
-	count -= 8;
-    } 
-	
-    while (count > 0)
-    { 
-	*dest = colormap[source[frac>>25]]; 
-	dest += SCREENWIDTH; 
-	frac += fracstep; 
-	count--;
-    } 
-}
-#endif
-
-
-void R_DrawColumnLow (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    byte*		dest2;
-    fixed_t		frac;
-    fixed_t		fracstep;	 
-    int                 x;
- 
-    count = dc_yh - dc_yl; 
-
-    // Zero length.
-    if (count < 0) 
-	return; 
-				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT)
-    {
-	
-	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x);
-    }
-    //	dccount++; 
-#endif 
-    // Blocky mode, need to multiply by 2.
-    x = dc_x << 1;
-    
-    dest = ylookup[dc_yl] + columnofs[x];
-    dest2 = ylookup[dc_yl] + columnofs[x+1];
-    
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep;
-    
-    do 
-    {
-	// Hack. Does not work corretly.
-	*dest2 = *dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
-	dest += SCREENWIDTH;
-	dest2 += SCREENWIDTH;
-	frac += fracstep; 
-
-    } while (count--);
-}
-
-
 //
-// Spectre/Invisibility.
+
+byte *translationtables;
+
+#define R_DRAWCOLUMN_PIPELINE_TYPE RDC_PIPELINE_STANDARD
+#define R_DRAWCOLUMN_PIPELINE_BASE RDC_STANDARD
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawColumn8 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad8
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawColumn15 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad15
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawColumn16 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad16
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawColumn32 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad32
+#include "r_drawcolpipeline.inl"
+
+#undef R_DRAWCOLUMN_PIPELINE_BASE
+#undef R_DRAWCOLUMN_PIPELINE_TYPE
+
+// Here is the version of R_DrawColumn that deals with translucent  // phares
+// textures and sprites. It's identical to R_DrawColumn except      //    |
+// for the spot where the color index is stuffed into *dest. At     //    V
+// that point, the existing color index and the new color index
+// are mapped through the TRANMAP lump filters to get a new color
+// index whose RGB values are the average of the existing and new
+// colors.
 //
-#define FUZZTABLE		50 
-#define FUZZOFF	(SCREENWIDTH)
+// Since we're concerned about performance, the 'translucent or
+// opaque' decision is made outside this routine, not down where the
+// actual code differences are.
 
+#define R_DRAWCOLUMN_PIPELINE_TYPE RDC_PIPELINE_TRANSLUCENT
+#define R_DRAWCOLUMN_PIPELINE_BASE RDC_TRANSLUCENT
 
-int	fuzzoffset[FUZZTABLE] =
-{
-    FUZZOFF,-FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
-    FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
-    FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,
-    FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,
-    FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,
-    FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,
-    FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF,FUZZOFF,-FUZZOFF,FUZZOFF 
-}; 
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTLColumn8 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL8
+#include "r_drawcolpipeline.inl"
 
-int	fuzzpos = 0; 
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTLColumn15 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL15
+#include "r_drawcolpipeline.inl"
 
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTLColumn16 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL16
+#include "r_drawcolpipeline.inl"
 
-//
-// Framebuffer postprocessing.
-// Creates a fuzzy image by copying pixels
-//  from adjacent ones to left and right.
-// Used with an all black colormap, this
-//  could create the SHADOW effect,
-//  i.e. spectres and invisible players.
-//
-void R_DrawFuzzColumn (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    fixed_t		frac;
-    fixed_t		fracstep;	 
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTLColumn32 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeTL32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTTL32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadTL32
+#include "r_drawcolpipeline.inl"
 
-    // Adjust borders. Low... 
-    if (!dc_yl) 
-	dc_yl = 1;
-
-    // .. and high.
-    if (dc_yh == viewheight-1) 
-	dc_yh = viewheight - 2; 
-		 
-    count = dc_yh - dc_yl; 
-
-    // Zero length.
-    if (count < 0) 
-	return; 
-
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0 || dc_yh >= SCREENHEIGHT)
-    {
-	I_Error ("R_DrawFuzzColumn: %i to %i at %i",
-		 dc_yl, dc_yh, dc_x);
-    }
-#endif
-    
-    dest = ylookup[dc_yl] + columnofs[dc_x];
-
-    // Looks familiar.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
-
-    // Looks like an attempt at dithering,
-    //  using the colormap #6 (of 0-31, a bit
-    //  brighter than average).
-    do 
-    {
-	// Lookup framebuffer, and retrieve
-	//  a pixel that is either one column
-	//  left or right of the current one.
-	// Add index from colormap to index.
-	*dest = colormaps[6*256+dest[fuzzoffset[fuzzpos]]]; 
-
-	// Clamp table lookup index.
-	if (++fuzzpos == FUZZTABLE) 
-	    fuzzpos = 0;
-	
-	dest += SCREENWIDTH;
-
-	frac += fracstep; 
-    } while (count--); 
-} 
-
-// low detail mode version
- 
-void R_DrawFuzzColumnLow (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    byte*		dest2; 
-    fixed_t		frac;
-    fixed_t		fracstep;	 
-    int x;
-
-    // Adjust borders. Low... 
-    if (!dc_yl) 
-	dc_yl = 1;
-
-    // .. and high.
-    if (dc_yh == viewheight-1) 
-	dc_yh = viewheight - 2; 
-		 
-    count = dc_yh - dc_yl; 
-
-    // Zero length.
-    if (count < 0) 
-	return; 
-
-    // low detail mode, need to multiply by 2
-    
-    x = dc_x << 1;
-    
-#ifdef RANGECHECK 
-    if ((unsigned)x >= SCREENWIDTH
-	|| dc_yl < 0 || dc_yh >= SCREENHEIGHT)
-    {
-	I_Error ("R_DrawFuzzColumn: %i to %i at %i",
-		 dc_yl, dc_yh, dc_x);
-    }
-#endif
-    
-    dest = ylookup[dc_yl] + columnofs[x];
-    dest2 = ylookup[dc_yl] + columnofs[x+1];
-
-    // Looks familiar.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
-
-    // Looks like an attempt at dithering,
-    //  using the colormap #6 (of 0-31, a bit
-    //  brighter than average).
-    do 
-    {
-	// Lookup framebuffer, and retrieve
-	//  a pixel that is either one column
-	//  left or right of the current one.
-	// Add index from colormap to index.
-	*dest = colormaps[6*256+dest[fuzzoffset[fuzzpos]]]; 
-	*dest2 = colormaps[6*256+dest2[fuzzoffset[fuzzpos]]]; 
-
-	// Clamp table lookup index.
-	if (++fuzzpos == FUZZTABLE) 
-	    fuzzpos = 0;
-	
-	dest += SCREENWIDTH;
-	dest2 += SCREENWIDTH;
-
-	frac += fracstep; 
-    } while (count--); 
-} 
- 
-  
-  
- 
+#undef R_DRAWCOLUMN_PIPELINE_BASE
+#undef R_DRAWCOLUMN_PIPELINE_TYPE
 
 //
 // R_DrawTranslatedColumn
@@ -418,107 +394,294 @@ void R_DrawFuzzColumnLow (void)
 //  of the BaronOfHell, the HellKnight, uses
 //  identical sprites, kinda brightened up.
 //
-byte*	dc_translation;
-byte*	translationtables;
 
-void R_DrawTranslatedColumn (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    fixed_t		frac;
-    fixed_t		fracstep;	 
- 
-    count = dc_yh - dc_yl; 
-    if (count < 0) 
-	return; 
-				 
-#ifdef RANGECHECK 
-    if ((unsigned)dc_x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT)
+#define R_DRAWCOLUMN_PIPELINE_TYPE RDC_PIPELINE_TRANSLATED
+#define R_DRAWCOLUMN_PIPELINE_BASE RDC_TRANSLATED
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTranslatedColumn8 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad8
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTranslatedColumn15 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad15
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTranslatedColumn16 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad16
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawTranslatedColumn32 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWhole32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHT32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuad32
+#include "r_drawcolpipeline.inl"
+
+#undef R_DRAWCOLUMN_PIPELINE_BASE
+#undef R_DRAWCOLUMN_PIPELINE_TYPE
+
+//
+// Framebuffer postprocessing.
+// Creates a fuzzy image by copying pixels
+//  from adjacent ones to left and right.
+// Used with an all black colormap, this
+//  could create the SHADOW effect,
+//  i.e. spectres and invisible players.
+//
+
+#define R_DRAWCOLUMN_PIPELINE_TYPE RDC_PIPELINE_FUZZ
+#define R_DRAWCOLUMN_PIPELINE_BASE RDC_FUZZ
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 8
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawFuzzColumn8 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz8
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz8
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz8
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 15
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawFuzzColumn15 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz15
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz15
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz15
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 16
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawFuzzColumn16 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz16
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz16
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz16
+#include "r_drawcolpipeline.inl"
+
+#define R_DRAWCOLUMN_PIPELINE_BITS 32
+#define R_DRAWCOLUMN_FUNCNAME_COMPOSITE(postfix) R_DrawFuzzColumn32 ## postfix
+#define R_FLUSHWHOLE_FUNCNAME R_FlushWholeFuzz32
+#define R_FLUSHHEADTAIL_FUNCNAME R_FlushHTFuzz32
+#define R_FLUSHQUAD_FUNCNAME R_FlushQuadFuzz32
+#include "r_drawcolpipeline.inl"
+
+#undef R_DRAWCOLUMN_PIPELINE_BASE
+#undef R_DRAWCOLUMN_PIPELINE_TYPE
+
+static R_DrawColumn_f drawcolumnfuncs[VID_MODEMAX][RDRAW_FILTER_MAXFILTERS][RDRAW_FILTER_MAXFILTERS][RDC_PIPELINE_MAXPIPELINES] = {
+  {
     {
-	I_Error ( "R_DrawColumn: %i to %i at %i",
-		  dc_yl, dc_yh, dc_x);
-    }
-    
-#endif 
-
-
-    dest = ylookup[dc_yl] + columnofs[dc_x]; 
-
-    // Looks familiar.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
-
-    // Here we do an additional index re-mapping.
-    do 
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn8_PointUV,
+       R_DrawTLColumn8_PointUV,
+       R_DrawTranslatedColumn8_PointUV,
+       R_DrawFuzzColumn8_PointUV,},
+      {R_DrawColumn8_LinearUV,
+       R_DrawTLColumn8_LinearUV,
+       R_DrawTranslatedColumn8_LinearUV,
+       R_DrawFuzzColumn8_LinearUV,},
+      {R_DrawColumn8_RoundedUV,
+       R_DrawTLColumn8_RoundedUV,
+       R_DrawTranslatedColumn8_RoundedUV,
+       R_DrawFuzzColumn8_RoundedUV,},
+    },
     {
-	// Translation tables are used
-	//  to map certain colorramps to other ones,
-	//  used with PLAY sprites.
-	// Thus the "green" ramp of the player 0 sprite
-	//  is mapped to gray, red, black/indigo. 
-	*dest = dc_colormap[dc_translation[dc_source[frac>>FRACBITS]]];
-	dest += SCREENWIDTH;
-	
-	frac += fracstep; 
-    } while (count--); 
-} 
-
-void R_DrawTranslatedColumnLow (void) 
-{ 
-    int			count; 
-    byte*		dest; 
-    byte*		dest2; 
-    fixed_t		frac;
-    fixed_t		fracstep;	 
-    int                 x;
- 
-    count = dc_yh - dc_yl; 
-    if (count < 0) 
-	return; 
-
-    // low detail, need to scale by 2
-    x = dc_x << 1;
-				 
-#ifdef RANGECHECK 
-    if ((unsigned)x >= SCREENWIDTH
-	|| dc_yl < 0
-	|| dc_yh >= SCREENHEIGHT)
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn8_PointUV_PointZ,
+       R_DrawTLColumn8_PointUV_PointZ,
+       R_DrawTranslatedColumn8_PointUV_PointZ,
+       R_DrawFuzzColumn8_PointUV_PointZ,},
+      {R_DrawColumn8_LinearUV_PointZ,
+       R_DrawTLColumn8_LinearUV_PointZ,
+       R_DrawTranslatedColumn8_LinearUV_PointZ,
+       R_DrawFuzzColumn8_LinearUV_PointZ,},
+      {R_DrawColumn8_RoundedUV_PointZ,
+       R_DrawTLColumn8_RoundedUV_PointZ,
+       R_DrawTranslatedColumn8_RoundedUV_PointZ,
+       R_DrawFuzzColumn8_RoundedUV_PointZ,},
+    },
     {
-	I_Error ( "R_DrawColumn: %i to %i at %i",
-		  dc_yl, dc_yh, x);
-    }
-    
-#endif 
-
-
-    dest = ylookup[dc_yl] + columnofs[x]; 
-    dest2 = ylookup[dc_yl] + columnofs[x+1]; 
-
-    // Looks familiar.
-    fracstep = dc_iscale; 
-    frac = dc_texturemid + (dc_yl-centery)*fracstep; 
-
-    // Here we do an additional index re-mapping.
-    do 
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn8_PointUV_LinearZ,
+       R_DrawTLColumn8_PointUV_LinearZ,
+       R_DrawTranslatedColumn8_PointUV_LinearZ,
+       R_DrawFuzzColumn8_PointUV_LinearZ,},
+      {R_DrawColumn8_LinearUV_LinearZ,
+       R_DrawTLColumn8_LinearUV_LinearZ,
+       R_DrawTranslatedColumn8_LinearUV_LinearZ,
+       R_DrawFuzzColumn8_LinearUV_LinearZ,},
+      {R_DrawColumn8_RoundedUV_LinearZ,
+       R_DrawTLColumn8_RoundedUV_LinearZ,
+       R_DrawTranslatedColumn8_RoundedUV_LinearZ,
+       R_DrawFuzzColumn8_RoundedUV_LinearZ,},
+    },
+  },
+  {
     {
-	// Translation tables are used
-	//  to map certain colorramps to other ones,
-	//  used with PLAY sprites.
-	// Thus the "green" ramp of the player 0 sprite
-	//  is mapped to gray, red, black/indigo. 
-	*dest = dc_colormap[dc_translation[dc_source[frac>>FRACBITS]]];
-	*dest2 = dc_colormap[dc_translation[dc_source[frac>>FRACBITS]]];
-	dest += SCREENWIDTH;
-	dest2 += SCREENWIDTH;
-	
-	frac += fracstep; 
-    } while (count--); 
-} 
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn15_PointUV,
+       R_DrawTLColumn15_PointUV,
+       R_DrawTranslatedColumn15_PointUV,
+       R_DrawFuzzColumn15_PointUV,},
+      {R_DrawColumn15_LinearUV,
+       R_DrawTLColumn15_LinearUV,
+       R_DrawTranslatedColumn15_LinearUV,
+       R_DrawFuzzColumn15_LinearUV,},
+      {R_DrawColumn15_RoundedUV,
+       R_DrawTLColumn15_RoundedUV,
+       R_DrawTranslatedColumn15_RoundedUV,
+       R_DrawFuzzColumn15_RoundedUV,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn15_PointUV_PointZ,
+       R_DrawTLColumn15_PointUV_PointZ,
+       R_DrawTranslatedColumn15_PointUV_PointZ,
+       R_DrawFuzzColumn15_PointUV_PointZ,},
+      {R_DrawColumn15_LinearUV_PointZ,
+       R_DrawTLColumn15_LinearUV_PointZ,
+       R_DrawTranslatedColumn15_LinearUV_PointZ,
+       R_DrawFuzzColumn15_LinearUV_PointZ,},
+      {R_DrawColumn15_RoundedUV_PointZ,
+       R_DrawTLColumn15_RoundedUV_PointZ,
+       R_DrawTranslatedColumn15_RoundedUV_PointZ,
+       R_DrawFuzzColumn15_RoundedUV_PointZ,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn15_PointUV_LinearZ,
+       R_DrawTLColumn15_PointUV_LinearZ,
+       R_DrawTranslatedColumn15_PointUV_LinearZ,
+       R_DrawFuzzColumn15_PointUV_LinearZ,},
+      {R_DrawColumn15_LinearUV_LinearZ,
+       R_DrawTLColumn15_LinearUV_LinearZ,
+       R_DrawTranslatedColumn15_LinearUV_LinearZ,
+       R_DrawFuzzColumn15_LinearUV_LinearZ,},
+      {R_DrawColumn15_RoundedUV_LinearZ,
+       R_DrawTLColumn15_RoundedUV_LinearZ,
+       R_DrawTranslatedColumn15_RoundedUV_LinearZ,
+       R_DrawFuzzColumn15_RoundedUV_LinearZ,},
+    },
+  },
+  {
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn16_PointUV,
+       R_DrawTLColumn16_PointUV,
+       R_DrawTranslatedColumn16_PointUV,
+       R_DrawFuzzColumn16_PointUV,},
+      {R_DrawColumn16_LinearUV,
+       R_DrawTLColumn16_LinearUV,
+       R_DrawTranslatedColumn16_LinearUV,
+       R_DrawFuzzColumn16_LinearUV,},
+      {R_DrawColumn16_RoundedUV,
+       R_DrawTLColumn16_RoundedUV,
+       R_DrawTranslatedColumn16_RoundedUV,
+       R_DrawFuzzColumn16_RoundedUV,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn16_PointUV_PointZ,
+       R_DrawTLColumn16_PointUV_PointZ,
+       R_DrawTranslatedColumn16_PointUV_PointZ,
+       R_DrawFuzzColumn16_PointUV_PointZ,},
+      {R_DrawColumn16_LinearUV_PointZ,
+       R_DrawTLColumn16_LinearUV_PointZ,
+       R_DrawTranslatedColumn16_LinearUV_PointZ,
+       R_DrawFuzzColumn16_LinearUV_PointZ,},
+      {R_DrawColumn16_RoundedUV_PointZ,
+       R_DrawTLColumn16_RoundedUV_PointZ,
+       R_DrawTranslatedColumn16_RoundedUV_PointZ,
+       R_DrawFuzzColumn16_RoundedUV_PointZ,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn16_PointUV_LinearZ,
+       R_DrawTLColumn16_PointUV_LinearZ,
+       R_DrawTranslatedColumn16_PointUV_LinearZ,
+       R_DrawFuzzColumn16_PointUV_LinearZ,},
+      {R_DrawColumn16_LinearUV_LinearZ,
+       R_DrawTLColumn16_LinearUV_LinearZ,
+       R_DrawTranslatedColumn16_LinearUV_LinearZ,
+       R_DrawFuzzColumn16_LinearUV_LinearZ,},
+      {R_DrawColumn16_RoundedUV_LinearZ,
+       R_DrawTLColumn16_RoundedUV_LinearZ,
+       R_DrawTranslatedColumn16_RoundedUV_LinearZ,
+       R_DrawFuzzColumn16_RoundedUV_LinearZ,},
+    },
+  },
+  {
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn32_PointUV,
+       R_DrawTLColumn32_PointUV,
+       R_DrawTranslatedColumn32_PointUV,
+       R_DrawFuzzColumn32_PointUV,},
+      {R_DrawColumn32_LinearUV,
+       R_DrawTLColumn32_LinearUV,
+       R_DrawTranslatedColumn32_LinearUV,
+       R_DrawFuzzColumn32_LinearUV,},
+      {R_DrawColumn32_RoundedUV,
+       R_DrawTLColumn32_RoundedUV,
+       R_DrawTranslatedColumn32_RoundedUV,
+       R_DrawFuzzColumn32_RoundedUV,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn32_PointUV_PointZ,
+       R_DrawTLColumn32_PointUV_PointZ,
+       R_DrawTranslatedColumn32_PointUV_PointZ,
+       R_DrawFuzzColumn32_PointUV_PointZ,},
+      {R_DrawColumn32_LinearUV_PointZ,
+       R_DrawTLColumn32_LinearUV_PointZ,
+       R_DrawTranslatedColumn32_LinearUV_PointZ,
+       R_DrawFuzzColumn32_LinearUV_PointZ,},
+      {R_DrawColumn32_RoundedUV_PointZ,
+       R_DrawTLColumn32_RoundedUV_PointZ,
+       R_DrawTranslatedColumn32_RoundedUV_PointZ,
+       R_DrawFuzzColumn32_RoundedUV_PointZ,},
+    },
+    {
+      {NULL, NULL, NULL, NULL,},
+      {R_DrawColumn32_PointUV_LinearZ,
+       R_DrawTLColumn32_PointUV_LinearZ,
+       R_DrawTranslatedColumn32_PointUV_LinearZ,
+       R_DrawFuzzColumn32_PointUV_LinearZ,},
+      {R_DrawColumn32_LinearUV_LinearZ,
+       R_DrawTLColumn32_LinearUV_LinearZ,
+       R_DrawTranslatedColumn32_LinearUV_LinearZ,
+       R_DrawFuzzColumn32_LinearUV_LinearZ,},
+      {R_DrawColumn32_RoundedUV_LinearZ,
+       R_DrawTLColumn32_RoundedUV_LinearZ,
+       R_DrawTranslatedColumn32_RoundedUV_LinearZ,
+       R_DrawFuzzColumn32_RoundedUV_LinearZ,},
+    },
+  },
+};
 
+R_DrawColumn_f R_GetDrawColumnFunc(enum column_pipeline_e type,
+                                   enum draw_filter_type_e filter,
+                                   enum draw_filter_type_e filterz) {
+  R_DrawColumn_f result = drawcolumnfuncs[V_GetMode()][filterz][filter][type];
+  if (result == NULL)
+    I_Error("R_GetDrawColumnFunc: undefined function (%d, %d, %d)",
+            type, filter, filterz);
+  return result;
+}
 
-
+void R_SetDefaultDrawColumnVars(draw_column_vars_t *dcvars) {
+  dcvars->x = dcvars->yl = dcvars->yh = dcvars->z = 0;
+  dcvars->iscale = dcvars->texturemid = dcvars->texheight = dcvars->texu = 0;
+  dcvars->source = dcvars->prevsource = dcvars->nextsource = NULL;
+  dcvars->colormap = dcvars->nextcolormap = colormaps[0];
+  dcvars->translation = NULL;
+  dcvars->edgeslope = dcvars->drawingmasked = 0;
+  dcvars->edgetype = drawvars.sprite_edges;
+}
 
 //
 // R_InitTranslationTables
@@ -527,36 +690,49 @@ void R_DrawTranslatedColumnLow (void)
 // Assumes a given structure of the PLAYPAL.
 // Could be read from a lump instead.
 //
+
+byte playernumtotrans[MAXPLAYERS];
+extern lighttable_t *(*c_zlight)[LIGHTLEVELS][MAXLIGHTZ];
+
 void R_InitTranslationTables (void)
 {
-    int		i;
-	
-    translationtables = Z_Malloc (256*3, PU_STATIC, 0);
-    
-    // translate just the 16 green colors
-    for (i=0 ; i<256 ; i++)
-    {
-	if (i >= 0x70 && i<= 0x7f)
-	{
-	    // map green ramp to gray, brown, red
-	    translationtables[i] = 0x60 + (i&0xf);
-	    translationtables [i+256] = 0x40 + (i&0xf);
-	    translationtables [i+512] = 0x20 + (i&0xf);
-	}
-	else
-	{
-	    // Keep all other colors as is.
-	    translationtables[i] = translationtables[i+256] 
-		= translationtables[i+512] = i;
-	}
-    }
+  int i, j;
+#define MAXTRANS 3
+  byte transtocolour[MAXTRANS];
+
+  // killough 5/2/98:
+  // Remove dependency of colormaps aligned on 256-byte boundary
+
+  if (translationtables == NULL) // CPhipps - allow multiple calls
+    translationtables = Z_Malloc(256*MAXTRANS, PU_STATIC, 0);
+
+  for (i=0; i<MAXTRANS; i++) transtocolour[i] = 255;
+
+  for (i=0; i<MAXPLAYERS; i++) {
+    byte wantcolour = mapcolor_plyr[i];
+    playernumtotrans[i] = 0;
+    if (wantcolour != 0x70) // Not green, would like translation
+      for (j=0; j<MAXTRANS; j++)
+  if (transtocolour[j] == 255) {
+    transtocolour[j] = wantcolour; playernumtotrans[i] = j+1; break;
+  }
+  }
+
+  // translate just the 16 green colors
+  for (i=0; i<256; i++)
+    if (i >= 0x70 && i<= 0x7f)
+      {
+  // CPhipps - configurable player colours
+        translationtables[i] = colormaps[0][((i&0xf)<<9) + transtocolour[0]];
+        translationtables[i+256] = colormaps[0][((i&0xf)<<9) + transtocolour[1]];
+        translationtables[i+512] = colormaps[0][((i&0xf)<<9) + transtocolour[2]];
+      }
+    else  // Keep all other colors as is.
+      translationtables[i]=translationtables[i+256]=translationtables[i+512]=i;
 }
 
-
-
-
 //
-// R_DrawSpan 
+// R_DrawSpan
 // With DOOM style restrictions on view orientation,
 //  the floors and ceilings consist of horizontal slices
 //  or spans with constant z depth.
@@ -567,241 +743,286 @@ void R_InitTranslationTables (void)
 // In consequence, flats are not stored by column (like walls),
 //  and the inner loop has to step in texture space u and v.
 //
-int			ds_y; 
-int			ds_x1; 
-int			ds_x2;
 
-lighttable_t*		ds_colormap; 
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_PointUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD)
+#include "r_drawspan.inl"
 
-fixed_t			ds_xfrac; 
-fixed_t			ds_yfrac; 
-fixed_t			ds_xstep; 
-fixed_t			ds_ystep;
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_PointUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_DITHERZ)
+#include "r_drawspan.inl"
 
-// start of a 64*64 tile image 
-byte*			ds_source;	
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_LinearUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR)
+#include "r_drawspan.inl"
 
-// just for profiling
-int			dscount;
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_LinearUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR | RDC_DITHERZ)
+#include "r_drawspan.inl"
 
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_RoundedUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED)
+#include "r_drawspan.inl"
 
-//
-// Draws the actual span.
-void R_DrawSpan (void) 
-{ 
-    unsigned int position, step;
-    byte *dest;
-    int count;
-    int spot;
-    unsigned int xtemp, ytemp;
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan8_RoundedUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 8
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED | RDC_DITHERZ)
+#include "r_drawspan.inl"
 
-#ifdef RANGECHECK
-    if (ds_x2 < ds_x1
-	|| ds_x1<0
-	|| ds_x2>=SCREENWIDTH
-	|| (unsigned)ds_y>SCREENHEIGHT)
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_PointUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_PointUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_LinearUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_LinearUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_RoundedUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan15_RoundedUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 15
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_PointUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_PointUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_LinearUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_LinearUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_RoundedUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan16_RoundedUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 16
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_PointUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_PointUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_LinearUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_LinearUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_BILINEAR | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_RoundedUV_PointZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED)
+#include "r_drawspan.inl"
+
+#define R_DRAWSPAN_FUNCNAME R_DrawSpan32_RoundedUV_LinearZ
+#define R_DRAWSPAN_PIPELINE_BITS 32
+#define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED | RDC_DITHERZ)
+#include "r_drawspan.inl"
+
+static R_DrawSpan_f drawspanfuncs[VID_MODEMAX][RDRAW_FILTER_MAXFILTERS][RDRAW_FILTER_MAXFILTERS] = {
+  {
     {
-	I_Error( "R_DrawSpan: %i to %i at %i",
-		 ds_x1,ds_x2,ds_y);
-    }
-//	dscount++;
-#endif
-
-    // Pack position and step variables into a single 32-bit integer,
-    // with x in the top 16 bits and y in the bottom 16 bits.  For
-    // each 16-bit part, the top 6 bits are the integer part and the
-    // bottom 10 bits are the fractional part of the pixel position.
-
-    position = ((ds_xfrac << 10) & 0xffff0000)
-             | ((ds_yfrac >> 6)  & 0x0000ffff);
-    step = ((ds_xstep << 10) & 0xffff0000)
-         | ((ds_ystep >> 6)  & 0x0000ffff);
-
-    dest = ylookup[ds_y] + columnofs[ds_x1];
-
-    // We do not check for zero spans here?
-    count = ds_x2 - ds_x1;
-
-    do
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
     {
-	// Calculate current texture index in u,v.
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-        spot = xtemp | ytemp;
+      NULL,
+      R_DrawSpan8_PointUV_PointZ,
+      R_DrawSpan8_LinearUV_PointZ,
+      R_DrawSpan8_RoundedUV_PointZ,
+    },
+    {
+      NULL,
+      R_DrawSpan8_PointUV_LinearZ,
+      R_DrawSpan8_LinearUV_LinearZ,
+      R_DrawSpan8_RoundedUV_LinearZ,
+    },
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+  },
+  {
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+    {
+      NULL,
+      R_DrawSpan15_PointUV_PointZ,
+      R_DrawSpan15_LinearUV_PointZ,
+      R_DrawSpan15_RoundedUV_PointZ,
+    },
+    {
+      NULL,
+      R_DrawSpan15_PointUV_LinearZ,
+      R_DrawSpan15_LinearUV_LinearZ,
+      R_DrawSpan15_RoundedUV_LinearZ,
+    },
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+  },
+  {
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+    {
+      NULL,
+      R_DrawSpan16_PointUV_PointZ,
+      R_DrawSpan16_LinearUV_PointZ,
+      R_DrawSpan16_RoundedUV_PointZ,
+    },
+    {
+      NULL,
+      R_DrawSpan16_PointUV_LinearZ,
+      R_DrawSpan16_LinearUV_LinearZ,
+      R_DrawSpan16_RoundedUV_LinearZ,
+    },
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+  },
+  {
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+    {
+      NULL,
+      R_DrawSpan32_PointUV_PointZ,
+      R_DrawSpan32_LinearUV_PointZ,
+      R_DrawSpan32_RoundedUV_PointZ,
+    },
+    {
+      NULL,
+      R_DrawSpan32_PointUV_LinearZ,
+      R_DrawSpan32_LinearUV_LinearZ,
+      R_DrawSpan32_RoundedUV_LinearZ,
+    },
+    {
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+    },
+  },
+};
 
-	// Lookup pixel from flat texture tile,
-	//  re-index using light/colormap.
-	*dest++ = ds_colormap[ds_source[spot]];
-
-        position += step;
-
-    } while (count--);
+R_DrawSpan_f R_GetDrawSpanFunc(enum draw_filter_type_e filter,
+                               enum draw_filter_type_e filterz) {
+  R_DrawSpan_f result = drawspanfuncs[V_GetMode()][filterz][filter];
+  if (result == NULL)
+    I_Error("R_GetDrawSpanFunc: undefined function (%d, %d)",
+            filter, filterz);
+  return result;
 }
 
-
-
-// UNUSED.
-// Loop unrolled by 4.
-#if 0
-void R_DrawSpan (void) 
-{ 
-    unsigned	position, step;
-
-    byte*	source;
-    byte*	colormap;
-    byte*	dest;
-    
-    unsigned	count;
-    usingned	spot; 
-    unsigned	value;
-    unsigned	temp;
-    unsigned	xtemp;
-    unsigned	ytemp;
-		
-    position = ((ds_xfrac<<10)&0xffff0000) | ((ds_yfrac>>6)&0xffff);
-    step = ((ds_xstep<<10)&0xffff0000) | ((ds_ystep>>6)&0xffff);
-		
-    source = ds_source;
-    colormap = ds_colormap;
-    dest = ylookup[ds_y] + columnofs[ds_x1];	 
-    count = ds_x2 - ds_x1 + 1; 
-	
-    while (count >= 4) 
-    { 
-	ytemp = position>>4;
-	ytemp = ytemp & 4032;
-	xtemp = position>>26;
-	spot = xtemp | ytemp;
-	position += step;
-	dest[0] = colormap[source[spot]]; 
-
-	ytemp = position>>4;
-	ytemp = ytemp & 4032;
-	xtemp = position>>26;
-	spot = xtemp | ytemp;
-	position += step;
-	dest[1] = colormap[source[spot]];
-	
-	ytemp = position>>4;
-	ytemp = ytemp & 4032;
-	xtemp = position>>26;
-	spot = xtemp | ytemp;
-	position += step;
-	dest[2] = colormap[source[spot]];
-	
-	ytemp = position>>4;
-	ytemp = ytemp & 4032;
-	xtemp = position>>26;
-	spot = xtemp | ytemp;
-	position += step;
-	dest[3] = colormap[source[spot]]; 
-		
-	count -= 4;
-	dest += 4;
-    } 
-    while (count > 0) 
-    { 
-	ytemp = position>>4;
-	ytemp = ytemp & 4032;
-	xtemp = position>>26;
-	spot = xtemp | ytemp;
-	position += step;
-	*dest++ = colormap[source[spot]]; 
-	count--;
-    } 
-} 
-#endif
-
-
-//
-// Again..
-//
-void R_DrawSpanLow (void)
-{
-    unsigned int position, step;
-    unsigned int xtemp, ytemp;
-    byte *dest;
-    int count;
-    int spot;
-
-#ifdef RANGECHECK
-    if (ds_x2 < ds_x1
-	|| ds_x1<0
-	|| ds_x2>=SCREENWIDTH
-	|| (unsigned)ds_y>SCREENHEIGHT)
-    {
-	I_Error( "R_DrawSpan: %i to %i at %i",
-		 ds_x1,ds_x2,ds_y);
-    }
-//	dscount++; 
-#endif
-
-    position = ((ds_xfrac << 10) & 0xffff0000)
-             | ((ds_yfrac >> 6)  & 0x0000ffff);
-    step = ((ds_xstep << 10) & 0xffff0000)
-         | ((ds_ystep >> 6)  & 0x0000ffff);
-
-    count = (ds_x2 - ds_x1);
-
-    // Blocky mode, need to multiply by 2.
-    ds_x1 <<= 1;
-    ds_x2 <<= 1;
-
-    dest = ylookup[ds_y] + columnofs[ds_x1];
-
-    do
-    {
-	// Calculate current texture index in u,v.
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-        spot = xtemp | ytemp;
-
-	// Lowres/blocky mode does it twice,
-	//  while scale is adjusted appropriately.
-	*dest++ = ds_colormap[ds_source[spot]];
-	*dest++ = ds_colormap[ds_source[spot]];
-
-	position += step;
-
-    } while (count--);
+void R_DrawSpan(draw_span_vars_t *dsvars) {
+  R_GetDrawSpanFunc(drawvars.filterfloor, drawvars.filterz)(dsvars);
 }
 
 //
-// R_InitBuffer 
+// R_InitBuffer
 // Creats lookup tables that avoid
 //  multiplies and other hazzles
 //  for getting the framebuffer address
 //  of a pixel to draw.
 //
-void
-R_InitBuffer
-( int		width,
-  int		height ) 
-{ 
-    int		i; 
 
-    // Handle resize,
-    //  e.g. smaller view windows
-    //  with border and/or status bar.
-    viewwindowx = (SCREENWIDTH-width) >> 1; 
+void R_InitBuffer(int width, int height)
+{
+  int i=0;
+  // Handle resize,
+  //  e.g. smaller view windows
+  //  with border and/or status bar.
 
-    // Column offset. For windows.
-    for (i=0 ; i<width ; i++) 
-	columnofs[i] = viewwindowx + i;
+  viewwindowx = (SCREENWIDTH-width) >> 1;
 
-    // Samw with base row offset.
-    if (width == SCREENWIDTH) 
-	viewwindowy = 0; 
-    else 
-	viewwindowy = (SCREENHEIGHT-SBARHEIGHT-height) >> 1; 
+  // Same with base row offset.
 
-    // Preclaculate all row offsets.
-    for (i=0 ; i<height ; i++) 
-	ylookup[i] = I_VideoBuffer + (i+viewwindowy)*SCREENWIDTH; 
-} 
- 
- 
+  viewwindowy = width==SCREENWIDTH ? 0 : (SCREENHEIGHT-(ST_SCALED_HEIGHT-1)-height)>>1;
 
+  drawvars.byte_topleft = screens[0].data + viewwindowy*screens[0].byte_pitch + viewwindowx;
+  drawvars.short_topleft = (unsigned short *)(screens[0].data) + viewwindowy*screens[0].short_pitch + viewwindowx;
+  drawvars.int_topleft = (unsigned int *)(screens[0].data) + viewwindowy*screens[0].int_pitch + viewwindowx;
+  drawvars.byte_pitch = screens[0].byte_pitch;
+  drawvars.short_pitch = screens[0].short_pitch;
+  drawvars.int_pitch = screens[0].int_pitch;
+
+  if (V_GetMode() == VID_MODE8) {
+    for (i=0; i<FUZZTABLE; i++)
+      fuzzoffset[i] = fuzzoffset_org[i]*screens[0].byte_pitch;
+  } else if ((V_GetMode() == VID_MODE15) || (V_GetMode() == VID_MODE16)) {
+    for (i=0; i<FUZZTABLE; i++)
+      fuzzoffset[i] = fuzzoffset_org[i]*screens[0].short_pitch;
+  } else if (V_GetMode() == VID_MODE32) {
+    for (i=0; i<FUZZTABLE; i++)
+      fuzzoffset[i] = fuzzoffset_org[i]*screens[0].int_pitch;
+  }
+}
 
 //
 // R_FillBackScreen
@@ -809,167 +1030,99 @@ R_InitBuffer
 //  for variable screen sizes
 // Also draws a beveled edge.
 //
-void R_FillBackScreen (void) 
-{ 
-    byte*	src;
-    byte*	dest; 
-    int		x;
-    int		y; 
-    patch_t*	patch;
+// CPhipps - patch drawing updated
 
-    // DOOM border patch.
-    char       *name1 = DEH_String("FLOOR7_2");
+void R_FillBackScreen (void)
+{
+  int     x,y;
 
-    // DOOM II border patch.
-    char *name2 = DEH_String("GRNROCK");
+  if (scaledviewwidth == SCREENWIDTH)
+    return;
 
-    char *name;
+  V_DrawBackground(gamemode == commercial ? "GRNROCK" : "FLOOR7_2", 1);
 
-    // If we are running full screen, there is no need to do any of this,
-    // and the background buffer can be freed if it was previously in use.
+  for (x=0; x<scaledviewwidth; x+=8)
+    V_DrawNamePatch(viewwindowx+x,viewwindowy-8,1,"brdr_t", CR_DEFAULT, VPT_NONE);
 
-    if (scaledviewwidth == SCREENWIDTH)
-    {
-        if (background_buffer != NULL)
-        {
-            Z_Free(background_buffer);
-            background_buffer = NULL;
-        }
+  for (x=0; x<scaledviewwidth; x+=8)
+    V_DrawNamePatch(viewwindowx+x,viewwindowy+viewheight,1,"brdr_b", CR_DEFAULT, VPT_NONE);
 
-	return;
-    }
+  for (y=0; y<viewheight; y+=8)
+    V_DrawNamePatch(viewwindowx-8,viewwindowy+y,1,"brdr_l", CR_DEFAULT, VPT_NONE);
 
-    // Allocate the background buffer if necessary
-	
-    if (background_buffer == NULL)
-    {
-        background_buffer = Z_Malloc(SCREENWIDTH * (SCREENHEIGHT - SBARHEIGHT),
-                                     PU_STATIC, NULL);
-    }
+  for (y=0; y<viewheight; y+=8)
+    V_DrawNamePatch(viewwindowx+scaledviewwidth,viewwindowy+y,1,"brdr_r", CR_DEFAULT, VPT_NONE);
 
-    if (gamemode == commercial)
-	name = name2;
-    else
-	name = name1;
-    
-    src = W_CacheLumpName(name, PU_CACHE); 
-    dest = background_buffer;
-	 
-    for (y=0 ; y<SCREENHEIGHT-SBARHEIGHT ; y++) 
-    { 
-	for (x=0 ; x<SCREENWIDTH/64 ; x++) 
-	{ 
-	    memcpy (dest, src+((y&63)<<6), 64); 
-	    dest += 64; 
-	} 
+  // Draw beveled edge.
+  V_DrawNamePatch(viewwindowx-8,viewwindowy-8,1,"brdr_tl", CR_DEFAULT, VPT_NONE);
 
-	if (SCREENWIDTH&63) 
-	{ 
-	    memcpy (dest, src+((y&63)<<6), SCREENWIDTH&63); 
-	    dest += (SCREENWIDTH&63); 
-	} 
-    } 
-     
-    // Draw screen and bezel; this is done to a separate screen buffer.
+  V_DrawNamePatch(viewwindowx+scaledviewwidth,viewwindowy-8,1,"brdr_tr", CR_DEFAULT, VPT_NONE);
 
-    V_UseBuffer(background_buffer);
+  V_DrawNamePatch(viewwindowx-8,viewwindowy+viewheight,1,"brdr_bl", CR_DEFAULT, VPT_NONE);
 
-    patch = W_CacheLumpName(DEH_String("brdr_t"),PU_CACHE);
-
-    for (x=0 ; x<scaledviewwidth ; x+=8)
-	V_DrawPatch(viewwindowx+x, viewwindowy-8, patch);
-    patch = W_CacheLumpName(DEH_String("brdr_b"),PU_CACHE);
-
-    for (x=0 ; x<scaledviewwidth ; x+=8)
-	V_DrawPatch(viewwindowx+x, viewwindowy+viewheight, patch);
-    patch = W_CacheLumpName(DEH_String("brdr_l"),PU_CACHE);
-
-    for (y=0 ; y<viewheight ; y+=8)
-	V_DrawPatch(viewwindowx-8, viewwindowy+y, patch);
-    patch = W_CacheLumpName(DEH_String("brdr_r"),PU_CACHE);
-
-    for (y=0 ; y<viewheight ; y+=8)
-	V_DrawPatch(viewwindowx+scaledviewwidth, viewwindowy+y, patch);
-
-    // Draw beveled edge. 
-    V_DrawPatch(viewwindowx-8,
-                viewwindowy-8,
-                W_CacheLumpName(DEH_String("brdr_tl"),PU_CACHE));
-    
-    V_DrawPatch(viewwindowx+scaledviewwidth,
-                viewwindowy-8,
-                W_CacheLumpName(DEH_String("brdr_tr"),PU_CACHE));
-    
-    V_DrawPatch(viewwindowx-8,
-                viewwindowy+viewheight,
-                W_CacheLumpName(DEH_String("brdr_bl"),PU_CACHE));
-    
-    V_DrawPatch(viewwindowx+scaledviewwidth,
-                viewwindowy+viewheight,
-                W_CacheLumpName(DEH_String("brdr_br"),PU_CACHE));
-
-    V_RestoreBuffer();
-} 
- 
+  V_DrawNamePatch(viewwindowx+scaledviewwidth,viewwindowy+viewheight,1,"brdr_br", CR_DEFAULT, VPT_NONE);
+}
 
 //
 // Copy a screen buffer.
 //
-void
-R_VideoErase
-( unsigned	ofs,
-  int		count ) 
-{ 
-  // LFB copy.
-  // This might not be a good idea if memcpy
-  //  is not optiomal, e.g. byte by byte on
-  //  a 32bit CPU, as GNU GCC/Linux libc did
-  //  at one point.
 
-    if (background_buffer != NULL)
-    {
-        memcpy(I_VideoBuffer + ofs, background_buffer + ofs, count); 
-    }
-} 
-
+void R_VideoErase(int x, int y, int count)
+{
+  if (V_GetMode() != VID_MODEGL)
+    memcpy(screens[0].data+y*screens[0].byte_pitch+x*V_GetPixelDepth(),
+           screens[1].data+y*screens[1].byte_pitch+x*V_GetPixelDepth(),
+           count*V_GetPixelDepth());   // LFB copy.
+}
 
 //
 // R_DrawViewBorder
 // Draws the border around the view
 //  for different size windows?
 //
-void R_DrawViewBorder (void) 
-{ 
-    int		top;
-    int		side;
-    int		ofs;
-    int		i; 
- 
-    if (scaledviewwidth == SCREENWIDTH) 
-	return; 
-  
-    top = ((SCREENHEIGHT-SBARHEIGHT)-viewheight)/2; 
-    side = (SCREENWIDTH-scaledviewwidth)/2; 
- 
-    // copy top and one line of left side 
-    R_VideoErase (0, top*SCREENWIDTH+side); 
- 
-    // copy one line of right side and bottom 
-    ofs = (viewheight+top)*SCREENWIDTH-side; 
-    R_VideoErase (ofs, top*SCREENWIDTH+side); 
- 
-    // copy sides using wraparound 
-    ofs = top*SCREENWIDTH + SCREENWIDTH-side; 
-    side <<= 1;
-    
-    for (i=1 ; i<viewheight ; i++) 
-    { 
-	R_VideoErase (ofs, side); 
-	ofs += SCREENWIDTH; 
-    } 
 
-    // ? 
-    V_MarkRect (0,0,SCREENWIDTH, SCREENHEIGHT-SBARHEIGHT); 
-} 
- 
- 
+void R_DrawViewBorder(void)
+{
+  int top, side, i;
+
+  if (V_GetMode() == VID_MODEGL) {
+    // proff 11/99: we don't have a backscreen in OpenGL from where we can copy this
+    R_FillBackScreen();
+    return;
+  }
+
+  if ((SCREENHEIGHT != viewheight) ||
+      ((automapmode & am_active) && ! (automapmode & am_overlay)))
+  {
+    // erase left and right of statusbar
+    side= ( SCREENWIDTH - ST_SCALED_WIDTH ) / 2;
+
+    if (side > 0) {
+      for (i = (SCREENHEIGHT - ST_SCALED_HEIGHT); i < SCREENHEIGHT; i++)
+      {
+        R_VideoErase (0, i, side);
+        R_VideoErase (ST_SCALED_WIDTH+side, i, side);
+      }
+    }
+  }
+
+  if ( viewheight >= ( SCREENHEIGHT - ST_SCALED_HEIGHT ))
+    return; // if high-res, don´t go any further!
+
+  top = ((SCREENHEIGHT-ST_SCALED_HEIGHT)-viewheight)/2;
+  side = (SCREENWIDTH-scaledviewwidth)/2;
+
+  // copy top
+  for (i = 0; i < top; i++)
+    R_VideoErase (0, i, SCREENWIDTH);
+
+  // copy sides
+  for (i = top; i < (top+viewheight); i++) {
+    R_VideoErase (0, i, side);
+    R_VideoErase (viewwidth+side, i, side);
+  }
+
+  // copy bottom
+  for (i = top+viewheight; i < (SCREENHEIGHT - ST_SCALED_HEIGHT); i++)
+    R_VideoErase (0, i, SCREENWIDTH);
+}
