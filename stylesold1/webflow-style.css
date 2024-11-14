@@ -294,54 +294,54 @@ pre.w-code-block code {
   display: contents;
 }
 
-.w-webflow-badge, .w-webflow-badge > img {
-  box-sizing: unset;
-  width: unset;
-  height: unset;
-  max-height: unset;
-  max-width: unset;
-  min-height: unset;
-  min-width: unset;
-  margin: unset;
-  padding: unset;
-  float: unset;
-  clear: unset;
-  border: unset;
-  border-radius: unset;
-  background: unset;
-  background-image: unset;
-  background-position: unset;
-  background-size: unset;
-  background-repeat: unset;
-  background-origin: unset;
-  background-clip: unset;
-  background-attachment: unset;
-  background-color: unset;
-  box-shadow: unset;
-  transform: unset;
-  direction: unset;
-  font-family: unset;
-  font-weight: unset;
-  color: unset;
-  font-size: unset;
-  line-height: unset;
-  font-style: unset;
-  font-variant: unset;
-  text-align: unset;
-  letter-spacing: unset;
-  -webkit-text-decoration: unset;
-  text-decoration: unset;
-  text-indent: unset;
-  text-transform: unset;
-  list-style-type: unset;
-  text-shadow: unset;
-  vertical-align: unset;
-  cursor: unset;
-  white-space: unset;
-  word-break: unset;
-  word-spacing: unset;
-  word-wrap: unset;
-  transition: unset;
+.w-webflow-badge, .w-webflow-badge * {
+  z-index: auto;
+  visibility: visible;
+  box-sizing: border-box;
+  float: none;
+  clear: none;
+  box-shadow: none;
+  opacity: 1;
+  direction: ltr;
+  font-family: inherit;
+  font-weight: inherit;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  font-style: inherit;
+  font-variant: inherit;
+  text-align: inherit;
+  letter-spacing: inherit;
+  -webkit-text-decoration: inherit;
+  text-decoration: inherit;
+  text-indent: 0;
+  text-transform: inherit;
+  text-shadow: none;
+  font-smoothing: auto;
+  vertical-align: baseline;
+  cursor: inherit;
+  white-space: inherit;
+  word-break: normal;
+  word-spacing: normal;
+  word-wrap: normal;
+  background: none;
+  border: 0 #0000;
+  border-radius: 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  list-style-type: disc;
+  transition: none;
+  display: block;
+  position: static;
+  inset: auto;
+  overflow: visible;
+  transform: none;
 }
 
 .w-webflow-badge {
@@ -349,10 +349,9 @@ pre.w-code-block code {
   cursor: pointer;
   box-shadow: 0 0 0 1px #0000001a, 0 1px 3px #0000001a;
   visibility: visible !important;
-  opacity: 1 !important;
   z-index: 2147483647 !important;
   color: #aaadb0 !important;
-  overflow: unset !important;
+  opacity: 1 !important;
   background-color: #fff !important;
   border-radius: 3px !important;
   width: auto !important;
@@ -365,12 +364,12 @@ pre.w-code-block code {
   display: inline-block !important;
   position: fixed !important;
   inset: auto 12px 12px auto !important;
+  overflow: visible !important;
   transform: none !important;
 }
 
 .w-webflow-badge > img {
-  position: unset;
-  visibility: unset !important;
+  visibility: visible !important;
   opacity: 1 !important;
   vertical-align: middle !important;
   display: inline-block !important;
@@ -2679,17 +2678,7 @@ textarea.w-input, textarea.w-select {
   display: none;
 }
 
-.racing-section {
-  background-color: #1d1d1d;
-  height: 1300px;
-}
-
-.classics-section {
-  background-color: #1d1d1d;
-  height: 1400px;
-}
-
-.fps-section {
+.racing-section, .classics-section, .fps-section {
   background-color: #1d1d1d;
   height: 800px;
 }
@@ -2723,7 +2712,6 @@ textarea.w-input, textarea.w-select {
 
 .category-container {
   justify-content: center;
-  align-items: center;
   max-width: 1200px;
   margin-top: 40px;
   display: flex;
@@ -2963,89 +2951,6 @@ textarea.w-input, textarea.w-select {
 .sports-section {
   background-color: #1d1d1d;
   height: 800px;
-}
-
-.divider {
-  background-color: #2e2e2e;
-  min-height: 100px;
-  max-height: 200px;
-}
-
-.game-head-copy {
-  color: #fff;
-  text-align: center;
-  -webkit-text-fill-color: inherit;
-  background-clip: border-box;
-  border: 1px #000;
-  border-radius: 0;
-  padding-left: 5%;
-  padding-right: 5%;
-  font-family: Verdana, Geneva, sans-serif;
-}
-
-.stick-person-section {
-  background-color: #1d1d1d;
-  height: 800px;
-}
-
-.category-button-stick-person {
-  background-color: #e9c600;
-  border-radius: 10px;
-  margin-right: 25px;
-  padding-left: 75px;
-  padding-right: 75px;
-  font-family: Oswald, sans-serif;
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 40px;
-  position: static;
-  top: 6px;
-  left: 18px;
-  right: 0;
-}
-
-.new-section {
-  background-color: #631cce;
-  border-top: 10px solid #fff;
-  border-bottom: 10px solid #fff;
-  height: 1100px;
-}
-
-.new-heading {
-  color: #fff;
-  text-align: center;
-  -webkit-text-stroke-width: 3px;
-  -webkit-text-stroke-color: #000;
-  mix-blend-mode: normal;
-  font-family: Impact, Haettenschweiler, Franklin Gothic Bold, Charcoal, sans-serif;
-  font-size: 200px;
-  line-height: 110px;
-}
-
-.new-head {
-  color: #fff;
-  text-align: center;
-  -webkit-text-stroke-width: 2px;
-  -webkit-text-stroke-color: #000;
-  -webkit-text-fill-color: inherit;
-  background-clip: border-box;
-  border: 1px #000;
-  border-radius: 0;
-  padding-left: 5%;
-  padding-right: 5%;
-  font-family: Exo, sans-serif;
-  font-weight: 900;
-}
-
-.new-description {
-  color: #fff;
-  text-align: center;
-  -webkit-text-stroke-width: 4px;
-  -webkit-text-stroke-color: #000;
-  font-family: Exo, sans-serif;
-  font-size: 80px;
-  font-weight: 900;
-  line-height: 80px;
 }
 
 @media screen and (max-width: 991px) {
